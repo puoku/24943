@@ -10,19 +10,18 @@
 int main(int argc, char *argv[])
 {
     int i;
-    if (argc == 1) {        /* если аргументов нет – работаем с текущим каталогом */
+    if (argc == 1){
         argc = 2;
         argv[1] = ".";
     }
 
     for (i = 1; i < argc; i++) {
         struct stat st;
-        if (lstat(argv[i], &st) != 0) {   /* не смогли получить stat – просто пишем ошибку */
+        if (lstat(argv[i], &st) != 0) {
             perror(argv[i]);
             continue;
         }
 
-        /* тип файла + права доступа */
         char m[11];
         if (S_ISDIR(st.st_mode))
             m[0] = 'd';
@@ -42,16 +41,14 @@ int main(int argc, char *argv[])
         m[9] = (st.st_mode & S_IXOTH) ? 'x' : '-';
         m[10] = '\0';
 
-        /* владелец и группа */
+
         struct passwd *pw = getpwuid(st.st_uid);
         struct group  *gr = getgrgid(st.st_gid);
 
-        /* время модификации */
         char tbuf[20];
         struct tm *tm = localtime(&st.st_mtime);
         strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M", tm);
 
-        /* только имя файла без пути */
         char *name = argv[i];
         char *p = strrchr(name, '/');
         if (p) name = p + 1;
@@ -65,7 +62,7 @@ int main(int argc, char *argv[])
         if (S_ISREG(st.st_mode))
             printf("%10lld ", (long long)st.st_size);
         else
-            printf("           ");   /* пустое поле размера, 11 пробелов */
+            printf("          ");
 
         printf("%s %s\n", tbuf, name);
     }
