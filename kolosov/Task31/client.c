@@ -9,9 +9,9 @@
 
 int main(void)
 {
-    int s, n;
+    int s, i;
     struct sockaddr_un addr;
-    char buf[1024];
+    char buf[256];
 
     s = socket(AF_UNIX, SOCK_STREAM, 0);
 
@@ -21,8 +21,11 @@ int main(void)
 
     connect(s, (struct sockaddr *)&addr, sizeof(addr));
 
-    while ((n = read(0, buf, sizeof(buf))) > 0) {
+    for (i = 1; i <= 100; i++) {
+        int n = snprintf(buf, sizeof(buf),
+                         "message %d from client\n", i);
         write(s, buf, n);
+        usleep(10000);
     }
 
     close(s);
