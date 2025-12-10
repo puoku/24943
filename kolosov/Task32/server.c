@@ -64,7 +64,7 @@ int main(void)
     gettimeofday(&start_tv, NULL);
 
     while (1) {
-        if (time(NULL) - start >= 15)
+        if (time(NULL) - start >= 8)
             break;
 
         newfd = accept(srv, NULL, NULL);
