@@ -1,169 +1,147 @@
-#include <stdio.h>
 #include <ctype.h>
+#include <errno.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <sys/select.h>
-#include <sys/time.h>
 #include <time.h>
+#include <unistd.h>
 
-#define SOCK_PATH "socket_path"
+#define SOCKET_PATH "./socket"
+#define BUF_SIZE 1024
+#define MAX_CLIENTS 32
 
-int main(void)
-{
-    int srv, cli, newfd;
-    int clients[FD_SETSIZE];
-    int client_ids[FD_SETSIZE];
-    int msg_count[FD_SETSIZE];
+static volatile sig_atomic_t g_stop = 0;
+
+static void on_sigint(int sig) {
+    (void)sig;
+    g_stop = 1;
+}
+
+static void now_hms(char out[16]) {
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    if (!tm) {
+        strcpy(out, "??:??:??");
+        return;
+    }
+    snprintf(out, 16, "%02d:%02d:%02d", tm->tm_hour, tm->tm_min, tm->tm_sec);
+}
+
+static void die(const char *msg) {
+    perror(msg);
+    exit(1);
+}
+
+int main(void) {
+    int server_fd;
+    struct sockaddr_un addr;
+
+    struct pollfd fds[MAX_CLIENTS + 1];
+    int client_id[MAX_CLIENTS + 1];
+    time_t client_t0[MAX_CLIENTS + 1];
+    int nfds = 1;
+
     int next_id = 1;
 
-    int i, n, maxfd;
-    struct sockaddr_un addr;
-    fd_set rfds;
-    struct timeval tv;
+    signal(SIGINT, on_sigint);
+    signal(SIGTERM, on_sigint);
 
-    char buf[1024];
-    char outbuf[200000];
-    int outlen = 0;
-
-    time_t start;
-    struct timeval start_tv;
-    struct timeval first, last;
-    int have_first = 0;
-
-    for (i = 0; i < FD_SETSIZE; i++) {
-        clients[i] = -1;
-        client_ids[i] = 0;
-        msg_count[i] = 0;
-    }
-
-    srv = socket(AF_UNIX, SOCK_STREAM, 0);
+    server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (server_fd < 0) die("socket");
 
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, SOCK_PATH);
-    unlink(SOCK_PATH);
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
-    bind(srv, (struct sockaddr *)&addr, sizeof(addr));
-    listen(srv, 5);
+    unlink(SOCKET_PATH);
+    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) die("bind");
+    if (listen(server_fd, 16) < 0) die("listen");
 
-    start = time(NULL);
-    gettimeofday(&start_tv, NULL);
+    memset(fds, 0, sizeof(fds));
+    fds[0].fd = server_fd;
+    fds[0].events = POLLIN;
 
-    while (1) {
-        if (time(NULL) - start >= 15)
-            break;
+    char tbuf[16];
+    now_hms(tbuf);
+    printf("[%s] server: started, socket=%s\n", tbuf, SOCKET_PATH);
+    fflush(stdout);
 
-        FD_ZERO(&rfds);
-        FD_SET(srv, &rfds);
-        maxfd = srv;
+    while (!g_stop) {
+        int r = poll(fds, nfds, 200);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            die("poll");
+        }
+        if (r == 0) continue;
 
-        for (i = 0; i < FD_SETSIZE; i++) {
-            cli = clients[i];
-            if (cli >= 0) {
-                FD_SET(cli, &rfds);
-                if (cli > maxfd)
-                    maxfd = cli;
+        if (fds[0].revents & POLLIN) {
+            int cfd = accept(server_fd, NULL, NULL);
+            if (cfd >= 0) {
+                if (nfds <= MAX_CLIENTS) {
+                    fds[nfds].fd = cfd;
+                    fds[nfds].events = POLLIN;
+                    client_id[nfds] = next_id++;
+                    client_t0[nfds] = time(NULL);
+
+                    now_hms(tbuf);
+                    printf("[%s] + connect: id=%d fd=%d (clients=%d)\n",
+                           tbuf, client_id[nfds], cfd, nfds);
+                    fflush(stdout);
+
+                    nfds++;
+                } else {
+                    now_hms(tbuf);
+                    printf("[%s] ! reject: too many clients\n", tbuf);
+                    fflush(stdout);
+                    close(cfd);
+                }
             }
         }
+        for (int i = 1; i < nfds; i++) {
+            if (!(fds[i].revents & POLLIN)) continue;
 
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-
-        n = select(maxfd + 1, &rfds, NULL, NULL, &tv);
-        if (n <= 0)
-            continue;
-
-        if (FD_ISSET(srv, &rfds)) {
-            newfd = accept(srv, NULL, NULL);
-            if (newfd >= 0) {
-                for (i = 0; i < FD_SETSIZE; i++) {
-                    if (clients[i] < 0) {
-                        clients[i] = newfd;
-                        client_ids[i] = next_id++;
-                        msg_count[i] = 0;
-                        break;
-                    }
-                }
-            }
-        }
-
-        for (i = 0; i < FD_SETSIZE; i++) {
-            cli = clients[i];
-            if (cli >= 0 && FD_ISSET(cli, &rfds)) {
-                struct timeval now;
-                long sec, usec;
-                double t;
-                int len, j;
-                int cid;
-
-                n = read(cli, buf, sizeof(buf));
-                if (n <= 0) {
-                    close(cli);
-                    clients[i] = -1;
-                    client_ids[i] = 0;
-                    msg_count[i] = 0;
-                    continue;
+            char buf[BUF_SIZE];
+            ssize_t n = read(fds[i].fd, buf, sizeof(buf));
+            if (n > 0) {
+                for (ssize_t k = 0; k < n; k++) {
+                    buf[k] = (char)toupper((unsigned char)buf[k]);
                 }
 
-                gettimeofday(&now, NULL);
+                now_hms(tbuf);
+                printf("[%s] message: id=%d == %.*s",
+                       tbuf, client_id[i], (int)n, buf);
+                if (buf[n - 1] != '\n') printf("\n");
+                fflush(stdout);
+            } else {
+                now_hms(tbuf);
+                int secs = (int)difftime(time(NULL), client_t0[i]);
+                printf("[%s] - disconnect: id=%d (alive=%ds)\n",
+                       tbuf, client_id[i], secs);
+                fflush(stdout);
 
-                if (!have_first) {
-                    first = now;
-                    have_first = 1;
-                }
-                last = now;
+                close(fds[i].fd);
 
-                sec = now.tv_sec - start_tv.tv_sec;
-                usec = now.tv_usec - start_tv.tv_usec;
-                if (usec < 0) {
-                    sec--;
-                    usec += 1000000;
-                }
-
-                cid = client_ids[i];
-                msg_count[i]++;
-
-                if (outlen < 200000) {
-                    len = snprintf(outbuf + outlen,
-                                   200000 - outlen,
-                                   "[%ld.%06ld] %d message from (%d client): ",
-                                   sec, usec, msg_count[i], cid);
-                    if (len > 0)
-                        outlen += len;
-                    if (outlen > 200000)
-                        outlen = 200000;
-                }
-
-                for (j = 0; j < n && outlen < 200000; j++) {
-                    char c = buf[j];
-                    c = (char)toupper((unsigned char)c);
-                    outbuf[outlen++] = c;
-                }
-
-                if (outlen < 200000) {
-                    outbuf[outlen++] = '\n';
+                nfds--;
+                if (i != nfds) {
+                    fds[i] = fds[nfds];
+                    client_id[i] = client_id[nfds];
+                    client_t0[i] = client_t0[nfds];
+                    i--;
                 }
             }
         }
     }
 
-    if (outlen > 0)
-        write(1, outbuf, outlen);
+    now_hms(tbuf);
+    printf("[%s] stop\n", tbuf);
+    fflush(stdout);
 
-    if (have_first) {
-        long sec = last.tv_sec - first.tv_sec;
-        long usec = last.tv_usec - first.tv_usec;
-        if (usec < 0) {
-            sec--;
-            usec += 1000000;
-        }
-        printf("%ld.%06ld s\n", sec, usec);
-    }
-
-    close(srv);
-    unlink(SOCK_PATH);
+    for (int i = 1; i < nfds; i++) close(fds[i].fd);
+    close(server_fd);
+    unlink(SOCKET_PATH);
     return 0;
 }
