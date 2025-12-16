@@ -1,4 +1,3 @@
-// client.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,9 +26,6 @@ static void sleep_ms(int ms) {
 }
 
 int main(int argc, char **argv) {
-    // usage:
-    //   ./client "text"
-    //   ./client "text" count interval_ms delay_ms
     if (argc < 2) {
         fprintf(stderr, "Usage: %s \"text\" [count interval_ms delay_ms]\n", argv[0]);
         return 2;
