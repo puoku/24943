@@ -155,7 +155,8 @@ int main(void) {
                     if (mixed_pos >= CHUNK_SIZE) {
                         char t[16];
                         now_hms(t);
-                        printf("[%s] message: id=%d == %s\n", t, last_id, mixed_buffer);
+                        printf("[%s] message: id=%d == %s", t, last_id, mixed_buffer);
+                        putchar('\n');
                         fflush(stdout);
                         mixed_pos = 0;
                     }
@@ -179,7 +180,6 @@ int main(void) {
             }
         }
 
-        // compact (как у тебя)
         for (int i = 0; i < client_count; i++) {
             if (fds[i].fd == -1) {
                 for (int j = i; j < client_count - 1; j++) {
